@@ -14,7 +14,7 @@ const statbook=fn=>{  //對每個md文件
 
 files.forEach(statbook)
 const statobj=fromObj(obj,(a,b)=>[a,b]).sort((a,b)=>b[1]-a[1]);
-console.log(statobj.slice(0,20))
+console.table(statobj)
 
 
 /*
