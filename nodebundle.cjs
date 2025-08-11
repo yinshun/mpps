@@ -2217,6 +2217,7 @@ typeof SuppressedError === "function" ? SuppressedError : function (error, suppr
 };
 
 var escapeTemplateString = function (str) { return str.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, '$\\{'); };
+var unescapeTemplateString = function (str) { return str.replace(/\\\\/g, "\\").replace(/\\`/g, "`").replace(/$\\{/g, "\$\{"); };
 function pagejsonpfn(nchunk, folder) {
     if (folder === void 0) { folder = ''; }
     var jsfn = nchunk.toString().padStart(3, '0') + '.js';
@@ -18030,6 +18031,7 @@ exports.tokenize = tokenize$1;
 exports.tokenizeOfftext = tokenizeOfftext;
 exports.translatePointer = translatePointer;
 exports.trimPunc = trimPunc;
+exports.unescapeTemplateString = unescapeTemplateString;
 exports.union = union;
 exports.unique = unique;
 exports.unique0 = unique0;
