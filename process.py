@@ -3,14 +3,19 @@
 """
 整合式佛典文本處理工具 v7.0 (最終版)
 
-此腳本實現了從原始 MarkDown 檔案到結構化、已標記、已分類、並最終歸檔的
-完整自動化流程。
+此腳本實現了從原始 MarkDown 檔案到結構化、已標記、已分類、並最終轉換格式的
+完整自動化流程。它會為每個輸入檔案建立一個 mpps.*** 的子目錄來存放所有輸出。
 
 功能流程:
-  1. 讀取、清洗、分割、標記原始文本。
-  2. 根據檔名中的卷數，自動建立一個 mpps.{卷數} 的目標資料夾。
-  3. 將提取並格式化後的 jin/lun/kp 檔案儲存至目標資料夾。
-  4. 將轉換為 Obsidian 連結格式的主檔案及註釋檔案也儲存至目標資料夾。
+  1. 讀取原始檔案。
+  2. 初步清洗：移除文件頭資訊及特定格式符號。
+  3. 分割內容：將主要經文與文末的註釋區塊分離。
+  4. 標記內容：為主要經文的每一行添加經、論、科判的分類標記。
+  5. 最終清洗：從已標記的文本中移除所有的 "【論】" 字串。
+  6. 建立目標資料夾：根據輸入檔名建立 mpps.*** 子目錄。
+  7. 格式化提取與寫入：將 jin/lun/kp 內容格式化後儲存至 mpps.*** 子目錄。
+  8. 轉換為 Obsidian 連結：將主要內容轉換為帶有三位數補零的連結格式。
+  9. 儲存所有最終檔案至 mpps.*** 子目錄。
 
 使用方法:
   python process_sutra_v7.py -i <輸入檔案或目錄> -o <輸出目錄>
@@ -95,7 +100,7 @@ def remove_lun_marker(text: str) -> str:
     """從文本中移除所有的 "【論】" 字串。"""
     return text.replace('【論】', '')
 
-def extract_and_format_files(main_content: str, notes_content: str, stem: str, output_dir: Path):
+def extract_and_format_files(main_content: str, notes_content: str, stem: str, prefix_num: str, output_dir: Path):
     """提取標籤行，格式化後，儲存到獨立檔案。"""
     print(f"  - 開始提取並格式化分類檔案...")
     jin_lines, lun_lines, kp_lines = [], [], []
@@ -119,78 +124,89 @@ def extract_and_format_files(main_content: str, notes_content: str, stem: str, o
         if notes_content:
             final_content += f"\n\n---\n\n{notes_content}"
         
-        path = output_dir / f"{tag_name}-{stem}.md"
+        # 檔名中的數字也補零
+        padded_prefix = prefix_num.zfill(3)
+        path = output_dir / f"{tag_name}-{padded_prefix}.md"
         path.write_text(final_content, encoding='utf-8')
         print(f"    -> 已格式化並儲存 {tag_name.upper()} 內容至: {path}")
 
+    output_dir.mkdir(parents=True, exist_ok=True)
     format_and_write(jin_lines, 'jin')
     format_and_write(lun_lines, 'lun')
     format_and_write(kp_lines, 'kp')
 
 def transform_to_obsidian_links(text: str) -> str:
-    """將帶有標籤的行轉換為 Obsidian 連結格式。"""
+    """將帶有標籤的行轉換為 Obsidian 連結格式，並修正數字補零。"""
     print("  - 開始將主要檔案內容轉換為 Obsidian 連結格式...")
     
     pattern = re.compile(r'^\S.* \^(\w+)-(\d+)-(\d+)$', re.MULTILINE)
     
     def repl(m: re.Match) -> str:
-        tag, num1, num2 = m.groups()
-        return f"![[mpps.{num1}/{tag}-00{num1}#^{tag}-{num1}-{num2}]]"
+        tag, num1_str, num2 = m.groups()
+        # 修正：將第一個數字補零至三位
+        padded_num1 = num1_str.zfill(3)
+        # 連結路徑使用補零後的數字，但錨點內的標籤保持原始數字
+        return f"![[mpps.{padded_num1}/{tag}-{padded_num1}#^{tag}-{num1_str}-{num2}]]"
 
     transformed_text = pattern.sub(repl, text)
     return transformed_text
 
-def process_file(src_path: Path, base_output_dir: Path, is_inplace: bool):
-    """對單一檔案執行完整的處理流程，並將所有輸出歸檔。"""
-    print(f"處理中: {src_path.name}...")
+def process_file(src_path: Path, dst_dir: Path, is_inplace: bool):
+    """對單一檔案執行完整的處理流程。"""
+    print(f"\n處理中: {src_path.name}...")
     try:
         filename_stem = src_path.stem
-        match = re.search(r'\d+', filename_stem)
-        prefix = str(int(match.group(0))) if match else filename_stem
-        print(f"  - 使用前綴 (卷數): '{prefix}'")
+        match = re.search(r'(\d+)', filename_stem)
+        if not match:
+            print(f"錯誤：檔名 {filename_stem} 中未找到數字，無法處理。")
+            return
+            
+        prefix_num = match.group(1)
+        print(f"  - 使用前綴數字: '{prefix_num}'")
         
-        # 步驟 1-5: 核心處理流程
         original_text = src_path.read_text(encoding='utf-8')
+        
+        # 核心處理流程
         cleaned_text = clean_text(original_text)
         main_content, notes_content = split_notes(cleaned_text)
-        annotated_main = annotate_text(main_content, prefix)
+        annotated_main = annotate_text(main_content, prefix_num)
         final_main = remove_lun_marker(annotated_main)
 
-        # 步驟 6: 建立 mpps.{卷數} 目標資料夾
+        # 修正：建立 mpps.*** 子目錄
+        padded_prefix = prefix_num.zfill(3)
+        output_subdir = dst_dir / f"mpps.{padded_prefix}"
         if is_inplace:
-            final_output_dir_root = src_path.parent
-        else:
-            final_output_dir_root = base_output_dir
+            output_subdir = src_path.parent / f"mpps.{padded_prefix}"
         
-        mpps_output_dir = final_output_dir_root / f"mpps.{prefix}"
-        mpps_output_dir.mkdir(parents=True, exist_ok=True)
-        print(f"  - 所有輸出將定向至: {mpps_output_dir}")
+        output_subdir.mkdir(parents=True, exist_ok=True)
+        print(f"  - 所有輸出將存於: {output_subdir}")
 
-        # 步驟 7: 提取、格式化並儲存 jin/lun/kp 檔案至 mpps 資料夾
-        extract_and_format_files(final_main, notes_content, filename_stem, mpps_output_dir)
+        # 步驟 7: 提取、格式化並儲存 jin/lun/kp 檔案
+        extract_and_format_files(final_main, notes_content, filename_stem, prefix_num, output_subdir)
         
         # 步驟 8: 轉換主文件內容為 Obsidian 連結
         transformed_content = transform_to_obsidian_links(final_main)
 
-        # 步驟 9: 儲存最終檔案至 mpps 資料夾
-        main_output_path = mpps_output_dir / src_path.name
+        # 步驟 9: 儲存最終檔案
+        main_output_path = output_subdir / src_path.name
         main_output_path.write_text(transformed_content, encoding='utf-8')
         print(f"  -> 已儲存轉換後的主要內容至: {main_output_path}")
 
         if notes_content:
-            note_output_path = mpps_output_dir / f"note-{src_path.name}"
+            note_output_path = output_subdir / f"note-{src_path.name}"
             note_output_path.write_text(notes_content, encoding='utf-8')
-            print(f"  -> 已儲存註釋至: {note_output_path}")
+            print(f"  -> 已分割註釋至: {note_output_path}")
 
     except Exception as e:
         print(f"處理檔案 {src_path.name} 時發生嚴重錯誤: {e}", file=sys.stderr)
+
 
 def main():
     parser = argparse.ArgumentParser(description='整合式佛典文本處理工具 v7.0 (最終版)')
     parser.add_argument('-i', '--input', required=True, help='輸入的來源檔案或目錄。')
     output_group = parser.add_mutually_exclusive_group(required=True)
     output_group.add_argument('-o', '--output', help='輸出的目標目錄。')
-    output_group.add_argument('--inplace', action='store_true', help='在來源檔案相同目錄下生成 mpps.{卷數} 資料夾。')
+    output_group.add_argument('--inplace', action='store_true', help='原地修改檔案 (分類檔與註釋檔將建立於同目錄的 mpps.*** 子目錄中)。')
     parser.add_argument('--ext', nargs='*', default=['.md', '.txt'], help='目錄模式下要處理的副檔名 (預設: .md .txt)。')
     args = parser.parse_args()
 
@@ -213,9 +229,15 @@ def main():
             return
             
         for src_file in process_list:
-            # 傳遞根輸出目錄，讓 process_file 內部建立 mpps 子目錄
-            process_file(src_file, dest_root, args.inplace)
-        
+            # 在原地模式下，目標根目錄就是來源檔案的父目錄
+            if args.inplace:
+                process_file(src_file, src_file.parent, args.inplace)
+            else:
+                # 在輸出目錄模式下，保持相對路徑結構
+                relative_path = src_file.relative_to(input_path)
+                dest_dir = dest_root / relative_path.parent
+                process_file(src_file, dest_dir, args.inplace)
+
         print(f"\n處理完成！共處理了 {len(process_list)} 個檔案。")
 
 if __name__ == '__main__':
