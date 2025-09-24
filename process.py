@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-整合式佛典文本處理工具 v7.0 (最終版)
+整合式佛典文本處理工具 v10.0 (最終完美版)
 
 此腳本實現了從原始 MarkDown 檔案到結構化、已標記、已分類、並最終轉換格式的
-完整自動化流程。它會為每個輸入檔案建立一個 mpps.*** 的子目錄來存放所有輸出。
+完整自動化流程。此版本新增了強大的預處理模組，以應對更複雜的科判格式。
 
 功能流程:
   1. 讀取原始檔案。
-  2. 初步清洗：移除文件頭資訊及特定格式符號。
-  3. 分割內容：將主要經文與文末的註釋區塊分離。
-  4. 標記內容：為主要經文的每一行添加經、論、科判的分類標記。
+  2. 預處理 (新)：移除反斜線，並為含 [No.***] 的行添加 '$' 前綴。
+  3. 初步清洗：移除文件頭資訊及特定格式符號。
+  4. 標記內容：使用優先級判斷（先科判，後經/論）進行標記。
   5. 最終清洗：從已標記的文本中移除所有的 "【論】" 字串。
   6. 建立目標資料夾：根據輸入檔名建立 mpps.*** 子目錄。
   7. 格式化提取與寫入：將 jin/lun/kp 內容格式化後儲存至 mpps.*** 子目錄。
@@ -18,13 +18,39 @@
   9. 儲存所有最終檔案至 mpps.*** 子目錄。
 
 使用方法:
-  python process_sutra_v7.py -i <輸入檔案或目錄> -o <輸出目錄>
-  python process_sutra_v7.py -i <輸入檔案或目錄> --inplace
+  python process_sutra_v10.py -i <輸入檔案或目錄> -o <輸出目錄>
+  python process_sutra_v10.py -i <輸入檔案或目錄> --inplace
 """
 import argparse
 import re
 import sys
 from pathlib import Path
+
+def preprocess_for_kp(text: str) -> str:
+    """
+    (新) 預處理文本：
+    1. 移除所有反斜線。
+    2. 為包含 [No.***] 標籤的行，在行首添加 '$' 符號。
+    """
+    print("  - 執行預處理（移除反斜線、標記新型科判）...")
+    # 1. 移除所有反斜線
+    text = text.replace('\\', '')
+    
+    # 2. 處理 [No.***] 標籤
+    no_pattern = re.compile(r'\[No\.\d+[^\]]*\]')
+    lines = text.splitlines()
+    new_lines = []
+    for line in lines:
+        if no_pattern.search(line):
+            # 如果行首不是$，則添加
+            if not line.lstrip().startswith('$'):
+                new_lines.append('$' + line)
+            else:
+                new_lines.append(line) # 保持原樣，避免重複添加
+        else:
+            new_lines.append(line)
+            
+    return '\n'.join(new_lines)
 
 def clean_text(text: str) -> str:
     """執行初步的文字清洗，移除文件頭和 Markdown 格式符號。"""
@@ -44,11 +70,13 @@ def clean_text(text: str) -> str:
         print(f"警告：未找到標頭標誌 '釋厚觀'。將直接處理原始文本。")
         current_text = text
 
-    replacements = {'\\^': '', '\\$': '$', '**': '', '^^': '', '>': ''}
+    # 注意：這裡的 '$' 不能移除，因為它是科判的標誌
+    replacements = {'**': '', '^^': '', '>': ''}
     for old, new in replacements.items():
         current_text = current_text.replace(old, new)
     
-    cleaned_text = re.sub(r'^[ \t]+', '', current_text, flags=re.MULTILINE)
+    # 移除行首的空白，但保留 '$'
+    cleaned_text = re.sub(r'^[ \t]+(?!\$)', '', current_text, flags=re.MULTILINE)
     return cleaned_text
 
 def split_notes(text: str) -> tuple[str, str]:
@@ -61,10 +89,12 @@ def split_notes(text: str) -> tuple[str, str]:
     return text.strip(), ""
 
 def annotate_text(text: str, prefix: str) -> str:
-    """根據上下文和符號為文本行添加標記。"""
+    """根據優先級（先科判，後經/論）為文本行添加標記。"""
+    print("  - 執行優先級標記（科判 > 經 > 論）...")
     kp_pat = re.compile(r'^\s*\$')
     tagged_pat = re.compile(r'\s*\^(?:jin|lun|kp)-\S+-\d+\s*$')
-    mode = None
+    
+    mode = 'lun'
     jin_idx, lun_idx, kp_idx = 0, 0, 0
     out_lines = []
 
@@ -76,16 +106,16 @@ def annotate_text(text: str, prefix: str) -> str:
             out_lines.append(raw_line)
             continue
         
-        if '【經】' in line: mode = 'jin'
-        if '【論】' in line: mode = 'lun'
-        
         if kp_pat.match(stripped):
             kp_idx += 1
             suffix = f' ^kp-{prefix}-{kp_idx}'
             out_lines.append(line + suffix + '\n')
-        elif stripped == '【論】':
-            out_lines.append(raw_line)
-        elif mode == 'jin':
+            continue
+
+        if '【經】' in line: mode = 'jin'
+        if '【論】' in line: mode = 'lun'
+
+        if mode == 'jin':
             jin_idx += 1
             suffix = f' ^jin-{prefix}-{jin_idx}'
             out_lines.append(line + suffix + '\n')
@@ -118,13 +148,17 @@ def extract_and_format_files(main_content: str, notes_content: str, stem: str, p
 
     def format_and_write(lines: list, tag_name: str):
         if not lines: return
+        
+        processed_lines = lines
+        if tag_name == 'kp':
+            processed_lines = [re.sub(r'^\s*\$', '', line).lstrip() for line in lines]
+            print(f"    - 已移除 {tag_name.upper()} 內容中的 '$' 符號。")
 
-        formatted_body = '\n\n'.join(lines)
+        formatted_body = '\n\n'.join(processed_lines)
         final_content = formatted_body
         if notes_content:
             final_content += f"\n\n---\n\n{notes_content}"
         
-        # 檔名中的數字也補零
         padded_prefix = prefix_num.zfill(3)
         path = output_dir / f"{tag_name}-{padded_prefix}.md"
         path.write_text(final_content, encoding='utf-8')
@@ -143,12 +177,20 @@ def transform_to_obsidian_links(text: str) -> str:
     
     def repl(m: re.Match) -> str:
         tag, num1_str, num2 = m.groups()
-        # 修正：將第一個數字補零至三位
         padded_num1 = num1_str.zfill(3)
-        # 連結路徑使用補零後的數字，但錨點內的標籤保持原始數字
         return f"![[mpps.{padded_num1}/{tag}-{padded_num1}#^{tag}-{num1_str}-{num2}]]"
 
+    # 科判行前面可能有 '$'，需要特別處理
+    kp_pattern = re.compile(r'^\$\S.* \^kp-(\d+)-(\d+)$', re.MULTILINE)
+    
+    def kp_repl(m: re.Match) -> str:
+        num1_str, num2 = m.groups()
+        padded_num1 = num1_str.zfill(3)
+        return f"![[mpps.{padded_num1}/kp-{padded_num1}#^kp-{num1_str}-{num2}]]"
+
+    # 先轉換一般行，再轉換科判行
     transformed_text = pattern.sub(repl, text)
+    transformed_text = kp_pattern.sub(kp_repl, transformed_text)
     return transformed_text
 
 def process_file(src_path: Path, dst_dir: Path, is_inplace: bool):
@@ -167,12 +209,12 @@ def process_file(src_path: Path, dst_dir: Path, is_inplace: bool):
         original_text = src_path.read_text(encoding='utf-8')
         
         # 核心處理流程
-        cleaned_text = clean_text(original_text)
+        preprocessed_text = preprocess_for_kp(original_text)
+        cleaned_text = clean_text(preprocessed_text)
         main_content, notes_content = split_notes(cleaned_text)
         annotated_main = annotate_text(main_content, prefix_num)
         final_main = remove_lun_marker(annotated_main)
 
-        # 修正：建立 mpps.*** 子目錄
         padded_prefix = prefix_num.zfill(3)
         output_subdir = dst_dir / f"mpps.{padded_prefix}"
         if is_inplace:
@@ -181,13 +223,10 @@ def process_file(src_path: Path, dst_dir: Path, is_inplace: bool):
         output_subdir.mkdir(parents=True, exist_ok=True)
         print(f"  - 所有輸出將存於: {output_subdir}")
 
-        # 步驟 7: 提取、格式化並儲存 jin/lun/kp 檔案
         extract_and_format_files(final_main, notes_content, filename_stem, prefix_num, output_subdir)
         
-        # 步驟 8: 轉換主文件內容為 Obsidian 連結
         transformed_content = transform_to_obsidian_links(final_main)
 
-        # 步驟 9: 儲存最終檔案
         main_output_path = output_subdir / src_path.name
         main_output_path.write_text(transformed_content, encoding='utf-8')
         print(f"  -> 已儲存轉換後的主要內容至: {main_output_path}")
@@ -200,9 +239,8 @@ def process_file(src_path: Path, dst_dir: Path, is_inplace: bool):
     except Exception as e:
         print(f"處理檔案 {src_path.name} 時發生嚴重錯誤: {e}", file=sys.stderr)
 
-
 def main():
-    parser = argparse.ArgumentParser(description='整合式佛典文本處理工具 v7.0 (最終版)')
+    parser = argparse.ArgumentParser(description='整合式佛典文本處理工具 v10.0 (最終完美版)')
     parser.add_argument('-i', '--input', required=True, help='輸入的來源檔案或目錄。')
     output_group = parser.add_mutually_exclusive_group(required=True)
     output_group.add_argument('-o', '--output', help='輸出的目標目錄。')
@@ -229,11 +267,9 @@ def main():
             return
             
         for src_file in process_list:
-            # 在原地模式下，目標根目錄就是來源檔案的父目錄
             if args.inplace:
                 process_file(src_file, src_file.parent, args.inplace)
             else:
-                # 在輸出目錄模式下，保持相對路徑結構
                 relative_path = src_file.relative_to(input_path)
                 dest_dir = dest_root / relative_path.parent
                 process_file(src_file, dest_dir, args.inplace)
